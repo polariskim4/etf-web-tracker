@@ -4,10 +4,10 @@ import pandas as pd
 import pytz
 from datetime import datetime
 
-# 1. 페이지 설정 (넓은 화면 사용)
-st.set_page_config(page_title="ETF MDD DashBoard", page_icon="📊", layout="wide")
+# 1. 페이지 설정
+st.set_page_config(page_title="ETF MDD Tracker", page_icon="📈", layout="wide")
 
-# 2. 티커 목록 (정렬 및 중복 제거)
+# 2. 티커 목록
 TICKERS = [
     "TQQQ", "SOXL", "QLD", "SSO", "SPXL", "TSLL", "UPRO", "NVDL", "TMF",
     "TECL", "SQQQ", "FAS", "AGQ", "SH", "BULZ", "USD", "TNA", "NUGT",
@@ -29,98 +29,100 @@ TICKERS = [
 ]
 TICKERS = sorted(list(set(TICKERS)))
 
-# 3. 데이터 로드 (안정성 강화)
+# 3. 데이터 로드 함수 (기간 인자 추가)
 @st.cache_data(ttl=3600)
-def fetch_etf_data():
+def fetch_etf_data(period_years):
     results = []
-    my_bar = st.progress(0, text="실시간 시장 데이터 동기화 중...")
+    days = period_years * 252
+    my_bar = st.progress(0, text=f"{period_years}년 데이터 분석 중...")
     
     for i, ticker in enumerate(TICKERS):
         try:
-            df = yf.download(ticker, period="3y", interval="1d", progress=False)
-            if df.empty or len(df) < 20: continue
+            # 기간에 따른 데이터 호출 (1y, 2y, 3y)
+            yf_period = f"{period_years}y"
+            df = yf.download(ticker, period=yf_period, interval="1d", progress=False)
             
+            if df.empty or len(df) < 10: continue
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
-            cp = float(df['Close'].iloc[-1])
-            prev_cp = float(df['Close'].iloc[-2])
-            day_change = ((cp - prev_cp) / prev_cp) * 100
-
-            h_1y = float(df['High'].iloc[-252:].max()) if len(df) >= 252 else float(df['High'].max())
-            l_1y = float(df['Low'].iloc[-252:].min()) if len(df) >= 252 else float(df['Low'].min())
+            cp = float(df['Close'].iloc[-1]) # 현재가
+            start_price = float(df['Close'].iloc[0]) # 기준일(년초) 가격
             
-            mdd = ((cp - h_1y) / h_1y) * 100
-            gain = ((cp - l_1y) / l_1y) * 100
+            high = float(df['High'].max())
+            low = float(df['Low'].min())
             
-            # 신호 로직
-            if mdd <= -60.0 or gain <= 15.0:
-                status, color, score = "🔥 적극매수", "red", 3
-            elif mdd <= -30.0 or gain <= 40.0:
-                status, color, score = "🟢 매수", "green", 2
+            # 1. 기간 변화율 (기준년초 대비)
+            change_rate = ((cp - start_price) / start_price) * 100
+            
+            # 2. 최대 낙폭 (MDD)
+            mdd = ((cp - high) / high) * 100
+            
+            # 3. 저점 대비 상승률 (회복률)
+            recovery = ((cp - low) / low) * 100
+            
+            # 4. 스코어 계산: |MDD| * 100 - 회복률 * 100
+            # 사용자 요청 공식: Score = |MDD %| - Recovery %
+            # (수치 가독성을 위해 백분율 값 그대로 계산)
+            score = abs(mdd) - recovery
+            
+            # 5. 신호 판별
+            if score >= 50:
+                signal = "🔥 적극매수"
+            elif 30 <= score < 50:
+                signal = "🟢 매수"
             else:
-                status, color, score = "🟡 진입", "orange", 1
+                signal = "🟡 진입"
             
             results.append({
-                "ETF": ticker, "Price": cp, "Change": day_change,
-                "Status": status, "MDD": mdd, "Gain": gain, 
-                "High": h_1y, "Low": l_1y, "Score": score
+                "신호": signal,
+                "ETF": ticker,
+                "현재가": f"${cp:.2f}",
+                "기간 변화율": f"{change_rate:+.1f}%",
+                "MDD": f"{mdd:.1f}%",
+                "저점 대비 상승률": f"{recovery:+.1f}%",
+                "고가 / 저가": f"${high:.1f} / ${low:.1f}",
+                "스코어": round(score, 1)
             })
         except: continue
         my_bar.progress((i + 1) / len(TICKERS))
     
     my_bar.empty()
-    return pd.DataFrame(results)
+    return pd.DataFrame(results).sort_values("스코어", ascending=False)
 
-# 4. UI 레이아웃
-st.title("📊 레버리지 ETF 실시간 MDD 대시보드")
+# 4. UI 구성
+st.title("📊 ETF 매수 신호 분석 대시보드")
 ny_tz = pytz.timezone('America/New_York')
-st.caption(f"최종 업데이트 (NY): {datetime.now(ny_tz).strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"Update (NY): {datetime.now(ny_tz).strftime('%Y-%m-%d %H:%M:%S')}")
 
-data = fetch_etf_data()
+# 상단 기간 선택 탭
+tab1, tab2, tab3 = st.tabs(["📅 1년 분석", "📅 2년 분석", "📅 3년 분석"])
 
-if not data.empty:
-    # 요약 메트릭
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("전체 종목", f"{len(data)}개")
-    col2.metric("적극매수", f"{len(data[data['Score']==3)])}개", delta_color="inverse")
-    col3.metric("매수 가능", f"{len(data[data['Score']==2])}개")
-    col4.metric("관망/진입", f"{len(data[data['Score']==1])}개")
+def display_data(years):
+    data = fetch_etf_data(years)
+    if not data.empty:
+        # 필터링 섹션
+        signals = st.multiselect(f"{years}년 기준 신호 필터", ["🔥 적극매수", "🟢 매수", "🟡 진입"], default=["🔥 적극매수", "🟢 매수"], key=f"filter_{years}")
+        filtered_df = data[data['신호'].isin(signals)]
+        
+        # 테이블 출력
+        st.dataframe(
+            filtered_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "스코어": st.column_config.NumberColumn(format="%.1f"),
+                "현재가": st.column_config.TextColumn(help="실시간에 가까운 최신 종가"),
+                "MDD": st.column_config.TextColumn(help="전고점 대비 하락률"),
+            }
+        )
+        st.info(f"💡 **스코어 기준:** MDD가 크고 회복률이 낮을수록 높은 점수 (|MDD| - 회복률)")
+    else:
+        st.warning("데이터를 불러올 수 없습니다.")
 
-    st.divider()
-
-    # 필터 및 정렬
-    filter_col, sort_col = st.columns([2, 1])
-    with filter_col:
-        selected_status = st.multiselect("상태별 필터", ["🔥 적극매수", "🟢 매수", "🟡 진입"], default=["🔥 적극매수", "🟢 매수"])
-    with sort_col:
-        sort_by = st.selectbox("정렬 기준", ["MDD 낮은순", "수익률 높은순", "이름순"])
-
-    # 데이터 필터링 및 정렬 적용
-    filtered_df = data[data['Status'].isin(selected_status)]
-    if sort_by == "MDD 낮은순":
-        filtered_df = filtered_df.sort_values("MDD")
-    elif sort_by == "수익률 높은순":
-        filtered_df = filtered_df.sort_values("Change", ascending=False)
-
-    # 5. 카드형 UI 출력 (가독성 핵심)
-    rows = [filtered_df.iloc[i:i+4] for i in range(0, len(filtered_df), 4)]
-    
-    for row in rows:
-        cols = st.columns(4)
-        for i, (idx, item) in enumerate(row.iterrows()):
-            with cols[i]:
-                # 카드 스타일 적용
-                st.markdown(f"""
-                <div style="border: 1px solid #ddd; padding: 15px; border-radius: 10px; background-color: #f9f9f9; margin-bottom: 10px;">
-                    <h3 style="margin:0; color: #333;">{item['ETF']}</h3>
-                    <p style="font-size: 20px; font-weight: bold; margin: 5px 0;">${item['Price']:.2f} <span style="font-size:14px; color:{'red' if item['Change']>=0 else 'blue'};">({item['Change']:+.2f}%)</span></p>
-                    <hr style="margin: 10px 0;">
-                    <p style="margin: 2px 0;"><b>상태:</b> {item['Status']}</p>
-                    <p style="margin: 2px 0; color: red;"><b>MDD:</b> {item['MDD']:.1f}%</p>
-                    <p style="margin: 2px 0; color: green;"><b>저점대비:</b> +{item['Gain']:.1f}%</p>
-                </div>
-                """, unsafe_allow_html=True)
-
-else:
-    st.warning("데이터를 불러오는 중입니다. 잠시만 기다려주세요.")
+with tab1:
+    display_data(1)
+with tab2:
+    display_data(2)
+with tab3:
+    display_data(3)
