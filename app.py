@@ -8,7 +8,6 @@ from datetime import datetime
 st.set_page_config(page_title="ETF MDD Tracker", page_icon="🚀", layout="wide")
 
 TICKERS = [
-  // 기존 + 추가 종목 통합 (중복 제거)
   "TQQQ", "SOXL", "QLD", "SSO", "SPXL", "TSLL", "UPRO", "NVDL", "TMF",
   "TECL", "SQQQ", "FAS", "AGQ", "SH", "BULZ", "USD", "TNA", "NUGT",
   "KORU", "UGL", "SCO", "SOXS", "PSQ", "MUU", "UDOW", "DSPY", "YINN",
@@ -25,7 +24,6 @@ TICKERS = [
   "NVD", "LABD", "TECS", "INTW", "DUST", "WEBL", "MSFL", "HIMZ", "BIB",
   "ROBN", "SARK", "RXL", "QQQU", "UBT", "TSLS", "MIDU", "MVLL", "TSDD",
   "DXD", "TWM", "NBIL", "INDL", "EURL",
-  // 기존 목록에만 있던 종목
   "FNGU", "DUSL", "UTSL", "MEXX", "TPOR", "PILL", "DRN", "UYXY"
 ]
 
