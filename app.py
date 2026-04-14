@@ -29,33 +29,23 @@ TICKERS = [
 ]
 TICKERS = sorted(list(set(TICKERS)))
 
-# 3. 데이터 로드 및 분석 함수
+# 3. 데이터 로드 및 분석 함수 (안정성 강화)
 @st.cache_data(ttl=3600)
 def fetch_etf_data(period_years):
     results = []
-    my_bar = st.progress(0, text=f"{period_years}년 데이터 분석 중...")
+    my_bar = st.progress(0, text=f"{period_years}년 데이터 연동 중...")
     
     for i, ticker_symbol in enumerate(TICKERS):
         try:
-            t_obj = yf.Ticker(ticker_symbol)
-            df = t_obj.history(period=f"{period_years}y")
-            
-            # 데이터가 충분하지 않으면 스킵
-            if df.empty or len(df) < 10: continue
+            # 1단계: 가격 데이터 수집 (비교적 차단이 덜 되는 download 함수 사용)
+            df = yf.download(ticker_symbol, period=f"{period_years}y", interval="1d", progress=False)
+            if df.empty or len(df) < 10: 
+                continue
+                
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
 
-            # 메타데이터 추출
-            info = t_obj.info
-            name = info.get('longName', '').upper()
-            is_inv = "YES" if any(w in name for w in ["INVERSE", "SHORT", "BEAR", "REVERSE"]) else "NO"
-            
-            if any(w in name for w in ["3X", "TRIPLE"]): lev = "3x"
-            elif any(w in name for w in ["2X", "DOUBLE", "ULTRA"]): lev = "2x"
-            else: lev = "1x"
-            
-            aum_val = info.get('totalAssets', 0)
-            aum = f"${aum_val/1e9:.2f}B" if aum_val >= 1e9 else (f"${aum_val/1e6:.1f}M" if aum_val >= 1e6 else "N/A")
-
-            # 지표 계산
+            # 가격 지표 계산
             cp = float(df['Close'].iloc[-1])
             start_p = float(df['Close'].iloc[0])
             high = float(df['High'].max())
@@ -69,20 +59,43 @@ def fetch_etf_data(period_years):
             if score >= 50: sig = "🔥 적극매수"
             elif 30 <= score < 50: sig = "🟢 매수"
             else: sig = "🟡 진입"
-            
+
+            # 2단계: 메타데이터 추출 (차단 우려가 높으므로 별도 try-except 처리)
+            lev, is_inv, aum = "알수없음", "알수없음", "N/A"
+            try:
+                t_obj = yf.Ticker(ticker_symbol)
+                info = t_obj.info
+                name = info.get('longName', '').upper()
+                
+                is_inv = "YES" if any(w in name for w in ["INVERSE", "SHORT", "BEAR", "REVERSE"]) else "NO"
+                if any(w in name for w in ["3X", "TRIPLE"]): lev = "3x"
+                elif any(w in name for w in ["2X", "DOUBLE", "ULTRA"]): lev = "2x"
+                else: lev = "1x"
+                
+                aum_val = info.get('totalAssets', 0)
+                if aum_val and aum_val > 0:
+                    aum = f"${aum_val/1e9:.2f}B" if aum_val >= 1e9 else f"${aum_val/1e6:.1f}M"
+            except:
+                pass # 메타데이터를 못 가져와도 에러 없이 기본값으로 진행
+
             results.append({
                 "신호": sig, "ETF": ticker_symbol, "레버리지": lev, "인버스": is_inv,
                 "현재가": f"${cp:.2f}", "고가/저가": f"${high:.1f}/${low:.1f}",
                 "MDD": f"{mdd:.1f}%", "회복률": f"{rec:.1f}%", "기간변화": f"{chg:+.1f}%",
                 "점수": score, "자산규모(AUM)": aum
             })
-        except: continue
+            
+        except Exception as e: 
+            continue
+            
         my_bar.progress((i + 1) / len(TICKERS))
     
     my_bar.empty()
-    # 결과가 없을 경우 빈 데이터프레임 구조 반환하여 KeyError 방지
+    
+    # 데이터가 하나도 없을 경우 빈 데이터프레임 구조 반환
     if not results:
         return pd.DataFrame(columns=["신호", "ETF", "레버리지", "인버스", "현재가", "고가/저가", "MDD", "회복률", "기간변화", "점수", "자산규모(AUM)"])
+        
     return pd.DataFrame(results).sort_values("점수", ascending=False)
 
 # 4. UI 구성
@@ -96,20 +109,21 @@ def display_dashboard(years):
     df = fetch_etf_data(years)
     
     if df.empty:
-        st.warning(f"{years}년 기간에 대한 데이터를 불러오지 못했습니다. 종목의 상장 기간을 확인해 주세요.")
+        st.warning(f"데이터를 불러오지 못했습니다. (Yahoo Finance API 접속 지연)")
         return
 
     # 필터
     c1, c2, c3 = st.columns(3)
     with c1: s_sig = st.multiselect("신호 필터", ["🔥 적극매수", "🟢 매수", "🟡 진입"], default=["🔥 적극매수", "🟢 매수"], key=f"s{years}")
-    with c2: s_lev = st.multiselect("레버리지", ["3x", "2x", "1x"], default=["3x", "2x", "1x"], key=f"l{years}")
+    with c2: s_lev = st.multiselect("레버리지", ["3x", "2x", "1x", "알수없음"], default=["3x", "2x", "1x", "알수없음"], key=f"l{years}")
     with c3: s_inv = st.radio("인버스 포함", ["전체", "YES", "NO"], horizontal=True, key=f"i{years}")
 
     # 필터 적용
     final_df = df[df['신호'].isin(s_sig) & df['레버리지'].isin(s_lev)]
-    if s_inv != "전체": final_df = final_df[final_df['인버스'] == s_inv]
+    if s_inv != "전체": 
+        final_df = final_df[final_df['인버스'] == s_inv]
 
-    # 컬럼 순서 재배치 (요청 사항 반영)
+    # 컬럼 순서 재배치 (요청하신 순서 완벽 적용)
     final_df = final_df[["신호", "ETF", "레버리지", "인버스", "현재가", "고가/저가", "MDD", "회복률", "기간변화", "점수", "자산규모(AUM)"]]
 
     st.dataframe(final_df, use_container_width=True, hide_index=True)
